@@ -1,6 +1,6 @@
 # Painel — processos no Sigam/Naturatins
 
-Última verificação: **04/11/2026 20:57** — ✅ OK
+Última verificação: **04/11/2026 20:58** — ✅ OK
 
 | Processo | Apelido | Situação | Departamento atual | Assunto | Interessado |
 |---|---|---|---|---|---|
