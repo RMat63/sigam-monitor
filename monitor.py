@@ -117,7 +117,11 @@ def ler_comandos(estado):
     if TG_CHAT:
         estado["telegram_chat_id"] = TG_CHAT
     else:
-        sys.exit("Ninguém falou com o bot ainda. Abra o bot no Telegram e mande /start.")
+        try:
+            nome = tg_api("getMe")["result"]["username"]
+        except Exception:
+            nome = "?"
+        sys.exit(f"Ninguém falou com o bot @{nome} ainda. Abra o bot no Telegram e mande /start.")
     return comandos
 
 
