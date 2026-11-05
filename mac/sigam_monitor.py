@@ -19,7 +19,7 @@ import time
 import traceback
 import urllib.parse
 import urllib.request
-from html import unescape
+from html import escape, unescape
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -86,7 +86,7 @@ class Telegram:
     def enviar(self, texto):
         for i in range(0, len(texto), 3900):
             self.api("sendMessage", chat_id=self.chat, text=texto[i:i + 3900],
-                     disable_web_page_preview="true")
+                     parse_mode="HTML", disable_web_page_preview="true")
 
 
 # ---------------- Sigam ----------------
@@ -184,35 +184,40 @@ def significado(sit):
     return SIGNIFICADO.get(sit.strip().upper(), "situação sem descrição padrão — ver o despacho no Sigam.")
 
 
-def links(d):
-    l = []
-    if d.get("cod"):
-        l.append(f"🔗 Abrir o processo (precisa estar logado): {URL_DETALHE.format(d['cod'])}")
-    l.append(f"🔑 Login do Sigam: {URL_LOGIN}")
-    return "\n".join(l)
+def num(est, n):
+    """Número do processo já como link para a página do processo no Sigam."""
+    cod = (est["leituras"].get(n) or {}).get("cod")
+    return f'<a href="{URL_DETALHE.format(cod)}">{n}</a>' if cod else n
+
+
+def links(d=None):
+    return ("🔑 Toque no número do processo para abrir no Sigam "
+            f'(precisa estar logado — <a href="{URL_LOGIN}">entrar no Sigam</a>).')
 
 
 def resumo(est, n):
-    ap, d = est["monitorados"].get(n, n), est["leituras"].get(n)
+    ap, d = escape(est["monitorados"].get(n, n)), est["leituras"].get(n)
     if not d:
         return f"• {ap} ({n}): ainda sem leitura"
-    return f"• {ap} ({n})\n   {d['situacao']} — {d['departamento']}\n   ℹ️ {significado(d['situacao'])}"
+    return (f"• {ap} ({num(est, n)})\n   <b>{escape(d['situacao'])}</b> — {escape(d['departamento'])}"
+            f"\n   ℹ️ {significado(d['situacao'])}")
 
 
 def texto_status(est, m):
-    return f"📋 Processos no Sigam — {carimbo(m)}\n\n" + "\n".join(resumo(est, n) for n in est["monitorados"])
+    return (f"📋 Processos no Sigam — {carimbo(m)}\n\n" + "\n".join(resumo(est, n) for n in est["monitorados"])
+            + "\n\n" + links())
 
 
 def texto_processo(est, n):
     d = est["leituras"].get(n)
     if not d:
         return f"Sem leitura de {n}. Ele está na lista? (/status)"
-    linhas = [f"📄 {est['monitorados'].get(n, n)} ({n})"] + [f"{NOMES[c]}: {d[c]}" for c in CAMPOS]
+    linhas = [f"📄 {escape(est['monitorados'].get(n, n))} ({num(est, n)})"] + [f"{NOMES[c]}: {escape(d[c])}" for c in CAMPOS]
     linhas.append(f"ℹ️ {d['situacao']} = {significado(d['situacao'])}")
     hist = est["historico"].get(n, [])[-10:]
     if hist:
         linhas.append("\nÚltimas movimentações:")
-        linhas += [f"  {h['quando']}: {h['mudanca']}" for h in reversed(hist)]
+        linhas += [f"  {h['quando']}: {escape(h['mudanca'])}" for h in reversed(hist)]
     linhas.append("\n" + links(d))
     return "\n".join(linhas)
 
@@ -278,12 +283,14 @@ def atualizar_leituras(est, m):
         if not d:
             continue
         antes = est["leituras"].get(n)
+        est["leituras"][n] = d
         if antes and any(antes.get(c) != d[c] for c in CAMPOS):
             mud = "; ".join(f"{NOMES[c]}: {antes.get(c, '—')} → {d[c]}" for c in CAMPOS if antes.get(c) != d[c])
             est["historico"].setdefault(n, []).append({"quando": carimbo(m), "quando_iso": m.isoformat(), "mudanca": mud})
             est["historico"][n] = est["historico"][n][-50:]
-            alertas.append(f"📄 {est['monitorados'].get(n, n)} ({n})\n  " + mud.replace("; ", "\n  ")
-                           + f"\n  ℹ️ {d['situacao']} = {significado(d['situacao'])}\n" + links(d))
+            alertas.append(f"📄 {escape(est['monitorados'].get(n, n))} ({num(est, n)})\n  "
+                           + "\n  ".join(escape(x) for x in mud.split("; "))
+                           + f"\n  ℹ️ <b>{escape(d['situacao'])}</b> = {significado(d['situacao'])}\n" + links())
         est["leituras"][n] = d
     return alertas
 
@@ -348,14 +355,16 @@ def main():
                     raise RuntimeError("nenhum processo retornou na consulta (site fora ou mudou)")
                 for n, d in atual.items():
                     antes = est["leituras"].get(n)
+                    est["leituras"][n] = d
                     if antes and any(antes.get(c) != d[c] for c in CAMPOS):
                         mud = "; ".join(f"{NOMES[c]}: {antes.get(c, '—')} → {d[c]}"
                                         for c in CAMPOS if antes.get(c) != d[c])
                         est["historico"].setdefault(n, []).append(
                             {"quando": carimbo(m), "quando_iso": m.isoformat(), "mudanca": mud})
                         est["historico"][n] = est["historico"][n][-50:]
-                        alertas.append(f"📄 {est['monitorados'].get(n, n)} ({n})\n  " + mud.replace("; ", "\n  ")
-                           + f"\n  ℹ️ {d['situacao']} = {significado(d['situacao'])}\n" + links(d))
+                        alertas.append(f"📄 {escape(est['monitorados'].get(n, n))} ({num(est, n)})\n  "
+                                       + "\n  ".join(escape(x) for x in mud.split("; "))
+                                       + f"\n  ℹ️ <b>{escape(d['situacao'])}</b> = {significado(d['situacao'])}\n" + links())
                     est["leituras"][n] = d
                 if est.pop("falhando_desde", None):
                     est.pop("ultimo_aviso_falha", None)
@@ -367,7 +376,7 @@ def main():
                 ult = est.get("ultimo_aviso_falha")
                 if teste or primeira or not ult or (m - dt.datetime.fromisoformat(ult)).total_seconds() > INTERVALO_AVISO_FALHA_H * 3600:
                     est["ultimo_aviso_falha"] = m.isoformat()
-                    tg.enviar(f"⚠️ Robô do Sigam NÃO conseguiu verificar ({carimbo(m)}).\nMotivo: {erro}\n"
+                    tg.enviar(f"⚠️ Robô do Sigam NÃO conseguiu verificar ({carimbo(m)}).\nMotivo: {escape(str(erro))}\n"
                               "Enquanto isso durar, falta de alerta NÃO significa falta de movimentação.")
 
         if teste or not est.get("iniciado_em"):
