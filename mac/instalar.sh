@@ -1,28 +1,47 @@
 #!/bin/bash
-# Instala o robô do Sigam neste Mac. Uso: bash instalar.sh
+# Instala o robô Sigam no Mac: copia o script, pede o token do Telegram,
+# cria o agendamento (a cada 10 min) e roda um teste.
 set -e
-cd "$HOME/sigam-monitor"
-echo "1/4 Preparando o Python..."
-python3 -m venv .venv
-./.venv/bin/pip install -q --upgrade pip
-./.venv/bin/pip install -q -r requirements.txt
-echo "2/4 Baixando o navegador do robô (~150 MB)..."
-./.venv/bin/python -m playwright install chromium
-echo "3/4 Token do Telegram"
-if ! security find-generic-password -s sigam-telegram -a robo >/dev/null 2>&1; then
-  echo "Cole o token do BotFather e tecle Enter (o texto não aparece na tela):"
-  read -rs TOKEN
-  security add-generic-password -s sigam-telegram -a robo -w "$TOKEN"
-  unset TOKEN
-  echo "Token guardado no Chaveiro do Mac."
-else
-  echo "Token já estava no Chaveiro."
+PASTA="$HOME/SigamMonitor"
+REPO="https://raw.githubusercontent.com/RMat63/sigam-monitor/main/mac"
+PLIST="$HOME/Library/LaunchAgents/br.com.mateus.sigam.plist"
+PY="/usr/bin/python3"
+
+echo "== Robô Sigam: instalação =="
+if ! "$PY" -c "import ssl" >/dev/null 2>&1; then
+  echo "O Python do Mac ainda não está instalado."
+  echo "Vai abrir uma janela pedindo para instalar as 'ferramentas de linha de comando'."
+  echo "Clique em INSTALAR, espere terminar e rode este comando de novo."
+  xcode-select --install || true
+  exit 1
 fi
-echo "4/4 Ativando o agendamento..."
+
+mkdir -p "$PASTA"
+curl -fsSL "$REPO/sigam_monitor.py" -o "$PASTA/sigam_monitor.py"
+
+if [ ! -s "$PASTA/config.json" ]; then
+  TOKEN=$(osascript -e 'text returned of (display dialog "Cole aqui o token do seu bot do Telegram (o texto que o BotFather mandou):" default answer "" with title "Robô Sigam" with hidden answer)')
+  TOKEN=$(echo "$TOKEN" | tr -d '[:space:]')
+  if [ -z "$TOKEN" ]; then echo "Token vazio. Rode de novo."; exit 1; fi
+  umask 077
+  printf '{"telegram_token": "%s", "telegram_chat_id": "8431141453"}\n' "$TOKEN" > "$PASTA/config.json"
+fi
+
 mkdir -p "$HOME/Library/LaunchAgents"
-cp mac/br.mateus.sigam.plist "$HOME/Library/LaunchAgents/"
-launchctl unload "$HOME/Library/LaunchAgents/br.mateus.sigam.plist" 2>/dev/null || true
-launchctl load "$HOME/Library/LaunchAgents/br.mateus.sigam.plist"
+cat > "$PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>br.com.mateus.sigam</string>
+  <key>ProgramArguments</key><array><string>$PY</string><string>$PASTA/sigam_monitor.py</string></array>
+  <key>StartInterval</key><integer>600</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>$PASTA/robo.log</string>
+  <key>StandardErrorPath</key><string>$PASTA/robo.log</string>
+</dict></plist>
+EOF
+launchctl bootout "gui/$(id -u)/br.com.mateus.sigam" >/dev/null 2>&1 || true
+launchctl bootstrap "gui/$(id -u)" "$PLIST"
+
 echo "Rodando o primeiro teste..."
-export TELEGRAM_TOKEN="$(security find-generic-password -s sigam-telegram -a robo -w)"
-MODO=reconhecer ./.venv/bin/python monitor.py && echo "PRONTO. Confira o Telegram."
+"$PY" "$PASTA/sigam_monitor.py" --teste && echo "== Pronto! Confira o seu Telegram. ==" || echo "== Teste falhou: veja acima. =="
