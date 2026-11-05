@@ -15,6 +15,7 @@ import http.cookiejar
 import json
 import re
 import sys
+import time
 import traceback
 import urllib.parse
 import urllib.request
@@ -42,7 +43,7 @@ NOMES = {"tipo": "Tipo", "departamento": "Departamento", "interessado": "Interes
 RE_NUM = re.compile(r"\d{4}/\d+/\d+")
 AJUDA = ("Comandos:\n/status — todos os processos\n/processo NÚMERO — detalhe e histórico\n"
          "/add NÚMERO Apelido — monitorar novo processo\n/remover NÚMERO — parar de monitorar\n"
-         "Respondo em até 10 min (com o Mac ligado).")
+         "Respondo em segundos (com o Mac ligado).")
 
 
 def agora():
@@ -79,7 +80,7 @@ class Telegram:
 
     def api(self, metodo, **dados):
         corpo = urllib.parse.urlencode(dados).encode()
-        with urllib.request.urlopen(self.base + metodo, corpo, timeout=40) as r:
+        with urllib.request.urlopen(self.base + metodo, corpo, timeout=int(dados.get("timeout", 0)) + 40) as r:
             return json.loads(r.read())
 
     def enviar(self, texto):
@@ -177,8 +178,8 @@ def texto_processo(est, n):
     return "\n".join(linhas)
 
 
-def ler_comandos(tg, est):
-    params = {"timeout": 0}
+def ler_comandos(tg, est, espera=0):
+    params = {"timeout": espera}
     if est.get("tg_offset"):
         params["offset"] = est["tg_offset"]
     comandos = []
@@ -217,6 +218,53 @@ def tratar_comandos(est, comandos, m):
     return resp
 
 
+# ---------------- escuta de comandos ----------------
+ESCUTA_S = 540  # fica ouvindo o Telegram por ~9 min; o launchd reinicia a cada 10 min
+
+
+def atualizar_leituras(est, m):
+    """Consulta todos os processos; devolve lista de alertas de mudança."""
+    op, alertas = abrir_sessao(), []
+    for n in list(est["monitorados"]):
+        d = consultar(op, n)
+        if not d:
+            continue
+        antes = est["leituras"].get(n)
+        if antes and antes != d:
+            mud = "; ".join(f"{NOMES[c]}: {antes.get(c, '—')} → {d[c]}" for c in CAMPOS if antes.get(c) != d[c])
+            est["historico"].setdefault(n, []).append({"quando": carimbo(m), "quando_iso": m.isoformat(), "mudanca": mud})
+            est["historico"][n] = est["historico"][n][-50:]
+            alertas.append(f"📄 {est['monitorados'].get(n, n)} ({n})\n  " + mud.replace("; ", "\n  "))
+        est["leituras"][n] = d
+    return alertas
+
+
+def escutar(tg, est, inicio):
+    while time.monotonic() - inicio < ESCUTA_S:
+        resto = int(ESCUTA_S - (time.monotonic() - inicio))
+        try:
+            comandos = ler_comandos(tg, est, espera=max(1, min(50, resto)))
+        except Exception as e:
+            log(f"escuta: {e}")
+            time.sleep(20)
+            continue
+        if not comandos:
+            continue
+        m = agora()
+        try:
+            if any(c.split()[0].lower().split("@")[0] in ("/status", "/processo", "/add") for c in comandos):
+                alertas = atualizar_leituras(est, m)
+                if alertas:
+                    tg.enviar(f"🔔 Movimentação no Sigam — {carimbo(m)}\n\n" + "\n\n".join(alertas))
+        except Exception as e:
+            log(f"consulta na escuta: {e}")
+        for r in tratar_comandos(est, comandos, m):
+            tg.enviar(r())
+        est["ultima_execucao"] = m.isoformat()
+        gravar_json(ARQ_ESTADO, est)
+        log(f"escuta — {len(comandos)} comando(s) respondido(s)")
+
+
 # ---------------- execução ----------------
 def main():
     PASTA.mkdir(exist_ok=True)
@@ -230,6 +278,7 @@ def main():
     est.setdefault("historico", {})
     tg.chat = est.get("telegram_chat_id") or str(cfg.get("telegram_chat_id", ""))
     m = agora()
+    inicio = time.monotonic()
     hoje = m.date().isoformat()
     teste = "--teste" in sys.argv
     try:
@@ -287,6 +336,9 @@ def main():
             tg.enviar(texto_status(est, m) if mov else
                       f"✅ Fim do dia: {len(est['monitorados'])} processo(s) verificados, sem movimentação hoje.")
         log(f"ok — {len(est['leituras'])} leituras, {len(alertas)} alertas, {len(respostas)} comandos")
+        gravar_json(ARQ_ESTADO, est)
+        if not teste:
+            escutar(tg, est, inicio)
     finally:
         est["ultima_execucao"] = m.isoformat()
         gravar_json(ARQ_ESTADO, est)
