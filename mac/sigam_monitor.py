@@ -41,7 +41,7 @@ CAMPOS = ("tipo", "departamento", "interessado", "assunto", "situacao")
 NOMES = {"tipo": "Tipo", "departamento": "Departamento", "interessado": "Interessado",
          "assunto": "Assunto", "situacao": "Situação"}
 RE_NUM = re.compile(r"\d{4}/\d+/\d+")
-AJUDA = ("Comandos:\n/status — todos os processos (com o significado de cada situação)\n/processo NÚMERO — detalhe, histórico e link do processo\n/fonte — de onde vêm as informações\n"
+AJUDA = ("Comandos:\n/status — todos os processos (com o significado de cada situação)\n/processo NÚMERO — detalhe, histórico e link do processo\n/atualizar — consulta o Sigam agora (leva alguns segundos)\n/fonte — de onde vêm as informações\n"
          "/add NÚMERO Apelido — monitorar novo processo\n/remover NÚMERO — parar de monitorar\n"
          "Respondo em segundos (com o Mac ligado).")
 
@@ -204,7 +204,9 @@ def resumo(est, n):
 
 
 def texto_status(est, m):
-    return (f"📋 Processos no Sigam — {carimbo(m)}\n\n" + "\n".join(resumo(est, n) for n in est["monitorados"])
+    ult = est.get("ultima_leitura")
+    quando = carimbo(dt.datetime.fromisoformat(ult)) if ult else carimbo(m)
+    return (f"📋 Processos no Sigam — leitura de {quando}\n\n" + "\n".join(resumo(est, n) for n in est["monitorados"])
             + "\n\n" + links())
 
 
@@ -258,6 +260,8 @@ def tratar_comandos(est, comandos, m):
             resp.append(lambda: FONTE)
         elif cmd == "/status":
             resp.append(lambda: texto_status(est, m))
+        elif cmd == "/atualizar":
+            resp.append(lambda: "🔄 Consulta feita agora no Sigam.\n\n" + texto_status(est, agora()))
         elif cmd == "/processo" and nums:
             resp.append(lambda n=nums[0]: texto_processo(est, n))
         elif cmd == "/add" and nums:
@@ -272,7 +276,7 @@ def tratar_comandos(est, comandos, m):
 
 
 # ---------------- escuta de comandos ----------------
-ESCUTA_S = 540  # fica ouvindo o Telegram por ~9 min; o launchd reinicia a cada 10 min
+ESCUTA_S = 600  # entre duas consultas ao Sigam, fica ouvindo o Telegram
 
 
 def atualizar_leituras(est, m):
@@ -292,6 +296,7 @@ def atualizar_leituras(est, m):
                            + "\n  ".join(escape(x) for x in mud.split("; "))
                            + f"\n  ℹ️ <b>{escape(d['situacao'])}</b> = {significado(d['situacao'])}\n" + links())
         est["leituras"][n] = d
+    est["ultima_leitura"] = m.isoformat()
     return alertas
 
 
@@ -308,14 +313,17 @@ def escutar(tg, est, inicio):
             continue
         m = agora()
         try:
-            if any(c.split()[0].lower().split("@")[0] in ("/status", "/processo", "/add") for c in comandos):
+            if any(c.split()[0].lower().split("@")[0] in ("/add", "/atualizar") for c in comandos):
                 alertas = atualizar_leituras(est, m)
                 if alertas:
                     tg.enviar(f"🔔 Movimentação no Sigam — {carimbo(m)}\n\n" + "\n\n".join(alertas))
         except Exception as e:
             log(f"consulta na escuta: {e}")
         for r in tratar_comandos(est, comandos, m):
-            tg.enviar(r())
+            try:
+                tg.enviar(r())
+            except Exception as e:
+                log(f"envio: {e}")
         est["ultima_execucao"] = m.isoformat()
         gravar_json(ARQ_ESTADO, est)
         log(f"escuta — {len(comandos)} comando(s) respondido(s)")
@@ -341,6 +349,7 @@ def main():
         respostas = tratar_comandos(est, ler_comandos(tg, est), m)
         if not tg.chat:
             log("Ninguém falou com o bot ainda — mande /start para ele.")
+            time.sleep(60)
             return
         precisa_consultar = teste or respostas or HORA_INICIO <= m.hour < HORA_FIM
         alertas, nao_achados = [], []
@@ -366,6 +375,7 @@ def main():
                                        + "\n  ".join(escape(x) for x in mud.split("; "))
                                        + f"\n  ℹ️ <b>{escape(d['situacao'])}</b> = {significado(d['situacao'])}\n" + links())
                     est["leituras"][n] = d
+                est["ultima_leitura"] = m.isoformat()
                 if est.pop("falhando_desde", None):
                     est.pop("ultimo_aviso_falha", None)
                     tg.enviar(f"✅ Robô do Sigam voltou a funcionar ({carimbo(m)}).")
@@ -404,4 +414,15 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if "--teste" in sys.argv:
+        main()
+    else:
+        # Fica rodando sem parar: consulta o Sigam a cada 10 min e responde o Telegram na hora.
+        while True:
+            try:
+                main()
+            except SystemExit:
+                raise
+            except Exception:
+                log(traceback.format_exc())
+                time.sleep(30)
