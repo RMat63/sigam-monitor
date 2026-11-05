@@ -23,6 +23,13 @@ if [ ! -s "$PASTA/config.json" ]; then
   TOKEN=$(osascript -e 'text returned of (display dialog "Cole aqui o token do seu bot do Telegram (o texto que o BotFather mandou):" default answer "" with title "Robô Sigam" with hidden answer)')
   TOKEN=$(echo "$TOKEN" | tr -d '[:space:]')
   if [ -z "$TOKEN" ]; then echo "Token vazio. Rode de novo."; exit 1; fi
+  if ! curl -fsS "https://api.telegram.org/bot$TOKEN/getMe" >/dev/null 2>&1; then
+    echo ""
+    echo "== O Telegram NÃO reconheceu esse token. =="
+    echo "Abra a conversa com o BotFather, mande /mybots, escolha o seu bot,"
+    echo "toque em 'API Token', copie o token inteiro e rode o comando de novo."
+    exit 1
+  fi
   umask 077
   printf '{"telegram_token": "%s", "telegram_chat_id": "8431141453"}\n' "$TOKEN" > "$PASTA/config.json"
 fi
