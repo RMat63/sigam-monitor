@@ -1,11 +1,6 @@
 name: Monitor Sigam
 
 on:
-  schedule:
-    # Seg a sex, a cada 15 min, das 07h às 19h59 (horário de Palmas, UTC-3)
-    - cron: "4,19,34,49 10-22 * * 1-5"
-    # Fins de semana: a cada 2 h, só para responder comandos e pegar algo raro
-    - cron: "4 11-23/2 * * 0,6"
   workflow_dispatch:
     inputs:
       modo:
