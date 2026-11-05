@@ -13,10 +13,12 @@ Arquivos em ~/SigamMonitor:  config.json (token), estado.json, robo.log
 import datetime as dt
 import http.cookiejar
 import json
+import os
 import re
 import sys
 import time
 import traceback
+import unicodedata
 import urllib.parse
 import urllib.request
 from html import escape, unescape
@@ -41,9 +43,38 @@ CAMPOS = ("tipo", "departamento", "interessado", "assunto", "situacao")
 NOMES = {"tipo": "Tipo", "departamento": "Departamento", "interessado": "Interessado",
          "assunto": "Assunto", "situacao": "Situação"}
 RE_NUM = re.compile(r"\d{4}/\d+/\d+")
-AJUDA = ("Comandos:\n/status — todos os processos (com o significado de cada situação)\n/processo NÚMERO — detalhe, histórico e link do processo\n/atualizar — consulta o Sigam agora (leva alguns segundos)\n/fonte — de onde vêm as informações\n"
-         "/add NÚMERO Apelido — monitorar novo processo\n/remover NÚMERO — parar de monitorar\n"
-         "Respondo em segundos (com o Mac ligado).")
+COMANDOS = [
+    ("status", "Situação de todos os processos, com o significado e o link de cada um", "status"),
+    ("atualizar", "Consulta o Sigam agora e mostra o status (leva alguns segundos)", "atualizar"),
+    ("processo", "Detalhe, histórico e link de um processo", "processo 2025/40311/012702"),
+    ("add", "Passa a acompanhar um processo novo", "add 2026/40311/012345 Loteamento X"),
+    ("remover", "Deixa de acompanhar um processo", "remover 2026/40311/012345"),
+    ("fonte", "De onde vêm as informações", "fonte"),
+    ("opcoes", "Mostra esta lista de comandos", "op"),
+]
+AJUDA = ("📌 <b>Opções de comando</b>\n(pode digitar com ou sem a barra /, ou usar os botões abaixo)\n\n"
+         + "\n\n".join(f"<b>/{c}</b> — {d}\nEx.: <code>{ex}</code>" for c, d, ex in COMANDOS)
+         + "\n\n💡 Também pode mandar só o número do processo (ex.: <code>2025/40311/012702</code>)."
+         "\nRespondo em segundos com o Mac ligado.")
+TECLADO = json.dumps({"keyboard": [[{"text": "📋 Status"}, {"text": "🔄 Atualizar"}], [{"text": "📌 Opções"}]],
+                      "resize_keyboard": True, "is_persistent": True})
+ALIAS = {"op": "/opcoes", "ops": "/opcoes", "opcao": "/opcoes", "opcoes": "/opcoes", "menu": "/opcoes",
+         "ajuda": "/opcoes", "help": "/opcoes", "start": "/opcoes", "comandos": "/opcoes",
+         "status": "/status", "atualizar": "/atualizar", "processo": "/processo", "add": "/add",
+         "adicionar": "/add", "remover": "/remover", "fonte": "/fonte"}
+
+
+def normalizar(texto):
+    """Primeira palavra sem emoji, barra, acento e maiúscula -> comando padrão."""
+    palavras = [w for w in texto.split() if any(ch.isalnum() for ch in w)]
+    if not palavras:
+        return ""
+    w = palavras[0].lower().split("@")[0].lstrip("/")
+    w = "".join(ch for ch in unicodedata.normalize("NFD", w) if unicodedata.category(ch) != "Mn")
+    w = "".join(ch for ch in w if ch.isalnum())
+    if RE_NUM.fullmatch(texto.strip()):
+        return "/processo"
+    return ALIAS.get(w, "/" + w)
 
 
 def agora():
@@ -86,7 +117,12 @@ class Telegram:
     def enviar(self, texto):
         for i in range(0, len(texto), 3900):
             self.api("sendMessage", chat_id=self.chat, text=texto[i:i + 3900],
-                     parse_mode="HTML", disable_web_page_preview="true")
+                     parse_mode="HTML", disable_web_page_preview="true", reply_markup=TECLADO)
+
+    def registrar_menu(self):
+        """Cria o botão 'Menu' do Telegram com a lista de comandos."""
+        cmds = [{"command": c, "description": d[:60]} for c, d, _ in COMANDOS]
+        self.api("setMyCommands", commands=json.dumps(cmds, ensure_ascii=False))
 
 
 # ---------------- Sigam ----------------
@@ -252,9 +288,9 @@ def ler_comandos(tg, est, espera=0):
 def tratar_comandos(est, comandos, m):
     resp = []
     for texto in comandos:
-        cmd = texto.split()[0].lower().split("@")[0]
+        cmd = normalizar(texto)
         nums = RE_NUM.findall(texto)
-        if cmd in ("/start", "/ajuda", "/help"):
+        if cmd == "/opcoes":
             resp.append(lambda: AJUDA)
         elif cmd == "/fonte":
             resp.append(lambda: FONTE)
@@ -271,7 +307,7 @@ def tratar_comandos(est, comandos, m):
             est["monitorados"].pop(nums[0], None)
             resp.append(lambda n=nums[0]: f"🗑️ {n} removido do monitoramento.")
         else:
-            resp.append(lambda: "Não entendi.\n" + AJUDA)
+            resp.append(lambda: "Não entendi. Veja as opções:\n\n" + AJUDA)
     return resp
 
 
@@ -300,8 +336,24 @@ def atualizar_leituras(est, m):
     return alertas
 
 
+ARQ_SCRIPT = Path(__file__).resolve()
+VERSAO_CARREGADA = ARQ_SCRIPT.stat().st_mtime
+
+
+def recarregar_se_atualizado(est):
+    """Se o arquivo do robô foi atualizado, reinicia sozinho com a versão nova."""
+    try:
+        if ARQ_SCRIPT.stat().st_mtime != VERSAO_CARREGADA:
+            gravar_json(ARQ_ESTADO, est)
+            log("versão nova do robô detectada — reiniciando")
+            os.execv(sys.executable, [sys.executable, str(ARQ_SCRIPT)])
+    except OSError:
+        pass
+
+
 def escutar(tg, est, inicio):
     while time.monotonic() - inicio < ESCUTA_S:
+        recarregar_se_atualizado(est)
         resto = int(ESCUTA_S - (time.monotonic() - inicio))
         try:
             comandos = ler_comandos(tg, est, espera=max(1, min(50, resto)))
@@ -313,7 +365,7 @@ def escutar(tg, est, inicio):
             continue
         m = agora()
         try:
-            if any(c.split()[0].lower().split("@")[0] in ("/add", "/atualizar") for c in comandos):
+            if any(normalizar(c) in ("/add", "/atualizar") for c in comandos):
                 alertas = atualizar_leituras(est, m)
                 if alertas:
                     tg.enviar(f"🔔 Movimentação no Sigam — {carimbo(m)}\n\n" + "\n\n".join(alertas))
@@ -341,6 +393,12 @@ def main():
     est.setdefault("leituras", {})
     est.setdefault("historico", {})
     tg.chat = est.get("telegram_chat_id") or str(cfg.get("telegram_chat_id", ""))
+    if est.get("menu_registrado") != agora().date().isoformat() + "v2":
+        try:
+            tg.registrar_menu()
+            est["menu_registrado"] = agora().date().isoformat() + "v2"
+        except Exception as e:
+            log(f"menu: {e}")
     m = agora()
     inicio = time.monotonic()
     hoje = m.date().isoformat()
