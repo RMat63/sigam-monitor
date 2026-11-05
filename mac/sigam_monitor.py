@@ -49,6 +49,8 @@ COMANDOS = [
     ("processo", "Detalhe, histórico e link de um processo", "processo 2025/40311/012702"),
     ("add", "Passa a acompanhar um processo novo", "add 2026/40311/012345 Loteamento X"),
     ("remover", "Deixa de acompanhar um processo", "remover 2026/40311/012345"),
+    ("historico", "Tabela completa de movimentações e pendências (precisa de login)", "historico 2025/40311/012702"),
+    ("login", "Abre o login do Sigam no Mac para liberar o histórico", "login"),
     ("fonte", "De onde vêm as informações", "fonte"),
     ("opcoes", "Mostra esta lista de comandos", "op"),
 ]
@@ -61,7 +63,8 @@ TECLADO = json.dumps({"keyboard": [[{"text": "📋 Status"}, {"text": "🔄 Atua
 ALIAS = {"op": "/opcoes", "ops": "/opcoes", "opcao": "/opcoes", "opcoes": "/opcoes", "menu": "/opcoes",
          "ajuda": "/opcoes", "help": "/opcoes", "start": "/opcoes", "comandos": "/opcoes",
          "status": "/status", "atualizar": "/atualizar", "processo": "/processo", "add": "/add",
-         "adicionar": "/add", "remover": "/remover", "fonte": "/fonte"}
+         "adicionar": "/add", "remover": "/remover", "fonte": "/fonte",
+         "historico": "/historico", "hist": "/historico", "login": "/login", "entrar": "/login"}
 
 
 def normalizar(texto):
@@ -246,7 +249,7 @@ def texto_status(est, m):
             + "\n\n" + links())
 
 
-def texto_processo(est, n):
+def texto_processo(est, n, extra=""):
     d = est["leituras"].get(n)
     if not d:
         return f"Sem leitura de {n}. Ele está na lista? (/status)"
@@ -256,6 +259,8 @@ def texto_processo(est, n):
     if hist:
         linhas.append("\nÚltimas movimentações:")
         linhas += [f"  {h['quando']}: {escape(h['mudanca'])}" for h in reversed(hist)]
+    if extra:
+        linhas.append(extra)
     linhas.append("\n" + links(d))
     return "\n".join(linhas)
 
@@ -285,6 +290,23 @@ def ler_comandos(tg, est, espera=0):
     return comandos
 
 
+def comando_login(est):
+    b = nav()
+    if not b:
+        return ("O navegador do robô ainda não está instalado no Mac. "
+                "Peça ao Claude o comando de instalação.")
+    try:
+        b.abrir_login()
+    except Exception as e:
+        return f"Não consegui abrir o navegador no Mac: {escape(str(e))}"
+    est["aguardando_login"] = True
+    est["sessao_ok"] = False
+    return ("🔑 Abri a tela de login do Sigam <b>no Mac</b>.\n"
+            "1. No celular, abra o app <b>Chrome Remote Desktop</b> e entre no Mac.\n"
+            "2. Na janela do Sigam: CPF, senha, marque \"Não sou um robô\" e Entrar.\n"
+            "3. Pronto — eu aviso aqui quando o login for reconhecido.")
+
+
 def tratar_comandos(est, comandos, m):
     resp = []
     for texto in comandos:
@@ -299,7 +321,13 @@ def tratar_comandos(est, comandos, m):
         elif cmd == "/atualizar":
             resp.append(lambda: "🔄 Consulta feita agora no Sigam.\n\n" + texto_status(est, agora()))
         elif cmd == "/processo" and nums:
-            resp.append(lambda n=nums[0]: texto_processo(est, n))
+            resp.append(lambda n=nums[0]: texto_processo(est, n, (ultimo_mov(ler_hist(est, n)) if est.get("sessao_ok") else "") or "\n" + AVISO_LOGIN))
+        elif cmd == "/historico" and nums:
+            resp.append(lambda n=nums[0]: texto_historico(est, n))
+        elif cmd == "/historico":
+            resp.append(lambda: "Diga o número, ex.: <code>historico 2025/40311/012702</code>")
+        elif cmd == "/login":
+            resp.append(lambda: comando_login(est))
         elif cmd == "/add" and nums:
             est["monitorados"][nums[0]] = texto.split(nums[0], 1)[1].strip() or nums[0]
             resp.append(lambda n=nums[0]: "✅ Adicionado.\n" + texto_processo(est, n))
@@ -309,6 +337,116 @@ def tratar_comandos(est, comandos, m):
         else:
             resp.append(lambda: "Não entendi. Veja as opções:\n\n" + AJUDA)
     return resp
+
+
+# ---------------- navegador com login (histórico detalhado) ----------------
+NAV = None
+
+
+def nav():
+    """Navegador do robô; None se o Playwright não estiver instalado."""
+    global NAV
+    if NAV is None:
+        try:
+            import playwright  # noqa: F401
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from sigam_navegador import Navegador
+            NAV = Navegador(log)
+        except Exception as e:
+            log(f"navegador indisponível: {e}")
+            NAV = False
+    return NAV or None
+
+
+def ultimo_mov(hist):
+    if not hist or not hist.get("movimentos"):
+        return ""
+    r = hist["movimentos"][0]
+
+    def campo(*chaves):
+        for k, v in r.items():
+            if any(c in k for c in chaves) and v:
+                return escape(v)
+        return "—"
+    return ("\n🧾 <b>Última movimentação</b>"
+            f"\n  Situação: {campo('SITUA')}"
+            f"\n  Data: {campo('DATA')}"
+            f"\n  Origem: {campo('ORIGEM')}"
+            f"\n  Destino: {campo('DESTINO')}"
+            f"\n  Recebido em: {campo('RECEBIDO')}"
+            f"\n  Despacho: {campo('DESPACHO')}"
+            + (f"\n  Desfeito/desarquivado: {campo('DESFEITO')}" if campo('DESFEITO') != "—" else ""))
+
+
+def texto_pendencias(hist):
+    if not hist or not hist.get("pendencias"):
+        return "\n📎 Histórico de Pendência: nenhuma registrada."
+    linhas = ["\n⚠️ <b>Histórico de Pendência</b>"]
+    for r in hist["pendencias"][:10]:
+        linhas.append("  • " + " | ".join(f"{escape(k.title())}: {escape(v)}" for k, v in r.items() if v))
+    return "\n".join(linhas)
+
+
+def ler_hist(est, n):
+    """Lê o histórico com login; devolve dict ou None (sem login/sem navegador)."""
+    d = est["leituras"].get(n) or {}
+    b = nav()
+    if not b or not d.get("cod") or not est.get("sessao_ok"):
+        return None
+    try:
+        h = b.ler(d["cod"])
+    except Exception as e:
+        log(f"histórico {n}: {e}")
+        return None
+    if h is None:
+        est["sessao_ok"] = False
+    return h
+
+
+AVISO_LOGIN = ("🔒 Para ver despacho e movimentações é preciso estar logado no Sigam pelo robô.\n"
+               "Mande <code>login</code> — abre a tela de login no Mac (pelo celular, use o app Chrome Remote Desktop).")
+
+
+def texto_historico(est, n):
+    d = est["leituras"].get(n)
+    if not d:
+        return f"Sem leitura de {n}. Ele está na lista? (/status)"
+    h = ler_hist(est, n)
+    if h is None:
+        return f"📄 {escape(est['monitorados'].get(n, n))} ({num(est, n)})\n\n" + AVISO_LOGIN
+    linhas = [f"📄 {escape(est['monitorados'].get(n, n))} ({num(est, n)})", "\n🧾 <b>Histórico do Processo</b>"]
+    for r in h["movimentos"][:15]:
+        linhas.append("  • " + " | ".join(f"{escape(k.title())}: {escape(v)}" for k, v in r.items() if v))
+    if not h["movimentos"]:
+        linhas.append("  (nenhuma linha encontrada — a tela pode ter mudado)")
+    linhas.append(texto_pendencias(h))
+    return "\n".join(linhas)
+
+
+def cuidar_sessao(tg, est):
+    """Mantém a sessão viva; avisa quando o login foi concluído ou quando a sessão caiu."""
+    b = nav()
+    if not b:
+        return
+    cods = [d.get("cod") for d in est["leituras"].values() if d.get("cod")]
+    if cods:
+        b.cod_teste = cods[0]
+    try:
+        if est.get("aguardando_login"):
+            if b.login_concluido():
+                est["aguardando_login"] = False
+                est["sessao_ok"] = True
+                tg.enviar("✅ Login no Sigam ok. Já pode pedir <code>historico NÚMERO</code> "
+                          "ou <code>processo NÚMERO</code> com a última movimentação.")
+            return
+        if est.get("sessao_ok"):
+            r = b.manter_viva()
+            if r is False:
+                est["sessao_ok"] = False
+                tg.enviar("🔒 A sessão do Sigam caiu. O monitoramento continua; para voltar a ver os "
+                          "despachos, mande <code>login</code>.")
+    except Exception as e:
+        log(f"sessão: {e}")
 
 
 # ---------------- escuta de comandos ----------------
@@ -330,7 +468,8 @@ def atualizar_leituras(est, m):
             est["historico"][n] = est["historico"][n][-50:]
             alertas.append(f"📄 {escape(est['monitorados'].get(n, n))} ({num(est, n)})\n  "
                            + "\n  ".join(escape(x) for x in mud.split("; "))
-                           + f"\n  ℹ️ <b>{escape(d['situacao'])}</b> = {significado(d['situacao'])}\n" + links())
+                           + f"\n  ℹ️ <b>{escape(d['situacao'])}</b> = {significado(d['situacao'])}"
+                           + (ultimo_mov(ler_hist(est, n)) or ("\n" + AVISO_LOGIN)) + "\n" + links())
         est["leituras"][n] = d
     est["ultima_leitura"] = m.isoformat()
     return alertas
@@ -346,6 +485,8 @@ def recarregar_se_atualizado(est):
         if ARQ_SCRIPT.stat().st_mtime != VERSAO_CARREGADA:
             gravar_json(ARQ_ESTADO, est)
             log("versão nova do robô detectada — reiniciando")
+            if NAV:
+                NAV.fechar()
             os.execv(sys.executable, [sys.executable, str(ARQ_SCRIPT)])
     except OSError:
         pass
@@ -354,9 +495,11 @@ def recarregar_se_atualizado(est):
 def escutar(tg, est, inicio):
     while time.monotonic() - inicio < ESCUTA_S:
         recarregar_se_atualizado(est)
+        cuidar_sessao(tg, est)
         resto = int(ESCUTA_S - (time.monotonic() - inicio))
+        limite = 10 if est.get("aguardando_login") else 50
         try:
-            comandos = ler_comandos(tg, est, espera=max(1, min(50, resto)))
+            comandos = ler_comandos(tg, est, espera=max(1, min(limite, resto)))
         except Exception as e:
             log(f"escuta: {e}")
             time.sleep(20)
