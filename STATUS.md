@@ -1,6 +1,9 @@
 # Painel — processos no Sigam/Naturatins
 
-Última verificação: **04/11/2026 20:58** — ✅ OK
+Última verificação: **04/11/2026 21:00** — ⚠️ falhou: Page.goto: Timeout 60000ms exceeded.
+Call log:
+  - navigating to "https://sigam.to.gov.br/cadastrousuarioexterno/consulta_documento_processo.aspx", waiting until "domcontentloaded"
+
 
 | Processo | Apelido | Situação | Departamento atual | Assunto | Interessado |
 |---|---|---|---|---|---|

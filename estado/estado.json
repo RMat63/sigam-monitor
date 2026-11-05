@@ -1,4 +1,5 @@
 {
+ "falhando_desde": "2026-11-04T21:00-03:00",
  "historico": {},
  "leituras": {},
  "monitorados": {
@@ -7,5 +8,8 @@
   "2026/40311/011248": "Colinas – LP",
   "2026/40311/015485": "Colinas – AEF"
  },
- "ultima_execucao": "2026-11-04T20:58-03:00"
+ "telegram_chat_id": "8431141453",
+ "tg_offset": 711962972,
+ "ultima_execucao": "2026-11-04T21:00-03:00",
+ "ultimo_aviso_falha": "2026-11-04T21:00-03:00"
 }
