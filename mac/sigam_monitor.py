@@ -41,7 +41,7 @@ CAMPOS = ("tipo", "departamento", "interessado", "assunto", "situacao")
 NOMES = {"tipo": "Tipo", "departamento": "Departamento", "interessado": "Interessado",
          "assunto": "Assunto", "situacao": "Situação"}
 RE_NUM = re.compile(r"\d{4}/\d+/\d+")
-AJUDA = ("Comandos:\n/status — todos os processos\n/processo NÚMERO — detalhe e histórico\n"
+AJUDA = ("Comandos:\n/status — todos os processos (com o significado de cada situação)\n/processo NÚMERO — detalhe, histórico e link do processo\n/fonte — de onde vêm as informações\n"
          "/add NÚMERO Apelido — monitorar novo processo\n/remover NÚMERO — parar de monitorar\n"
          "Respondo em segundos (com o Mac ligado).")
 
@@ -95,15 +95,18 @@ class Tabela(HTMLParser):
 
     def __init__(self):
         super().__init__()
-        self.hidden, self.linhas = {}, []
+        self.hidden, self.linhas, self.cods_linha = {}, [], []
+        self.cods = []
         self._linha = self._cel = None
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
         if tag == "input" and (a.get("type") or "").lower() == "hidden" and a.get("name"):
             self.hidden[a["name"]] = a.get("value", "")
+        elif tag == "input" and a.get("name") == "cod_protocolo" and self._linha is not None:
+            self.cods.append(a.get("value", ""))
         elif tag == "tr":
-            self._linha = []
+            self._linha, self.cods = [], []
         elif tag == "td" and self._linha is not None:
             self._cel = []
 
@@ -113,6 +116,7 @@ class Tabela(HTMLParser):
             self._cel = None
         elif tag == "tr" and self._linha is not None:
             self.linhas.append(self._linha)
+            self.cods_linha.append(self.cods[0] if self.cods else "")
             self._linha = None
 
     def handle_data(self, data):
@@ -147,19 +151,52 @@ def consultar(op, numero):
                   P + "txt_email": "", P + "btnPesquisar": "Pesquisar"})
     r = Tabela()
     r.feed(baixar(op, dados))
-    for cel in r.linhas:
+    for cel, cod in zip(r.linhas, r.cods_linha):
         # processo | identificação | tipo | departamento | interessado | assunto | situação | [x]
         if len(cel) >= 7 and cel[0] == numero:
-            return dict(zip(CAMPOS, cel[2:7]))
+            d = dict(zip(CAMPOS, cel[2:7]))
+            d["cod"] = cod
+            return d
     return None
 
 
 # ---------------- textos ----------------
+URL_LOGIN = "https://sigam.to.gov.br/cadastrousuarioexterno/"
+URL_DETALHE = "https://sigam.to.gov.br/cadastrousuarioexterno/detalhe_documento_processo.aspx?cod_protocolo={}"
+SIGNIFICADO = {
+    "CADASTRADO": "registrado e aguardando o início da análise (fila).",
+    "ANDAMENTO": "ativo, tramitando no departamento indicado.",
+    "EM ANALISE": "em análise técnica.",
+    "EM ANÁLISE": "em análise técnica.",
+    "SOBRESTADO": "suspenso, aguardando algo (documento, outro processo ou providência). Ver o despacho.",
+    "ARQUIVADO": "encerrado e fora de análise. Pode ser conclusão normal da etapa ou pendência não atendida — ver o despacho.",
+    "PENDENTE": "aguardando providência do requerente. Ver a notificação.",
+    "PENDÊNCIA": "aguardando providência do requerente. Ver a notificação.",
+    "NOTIFICADO": "há notificação ao requerente, normalmente com prazo. Ver a notificação.",
+    "DEFERIDO": "pedido aprovado.",
+    "INDEFERIDO": "pedido negado. Ver o parecer e o prazo de recurso.",
+    "CONCLUIDO": "concluído.",
+    "CONCLUÍDO": "concluído.",
+}
+
+
+def significado(sit):
+    return SIGNIFICADO.get(sit.strip().upper(), "situação sem descrição padrão — ver o despacho no Sigam.")
+
+
+def links(d):
+    l = []
+    if d.get("cod"):
+        l.append(f"🔗 Abrir o processo (precisa estar logado): {URL_DETALHE.format(d['cod'])}")
+    l.append(f"🔑 Login do Sigam: {URL_LOGIN}")
+    return "\n".join(l)
+
+
 def resumo(est, n):
     ap, d = est["monitorados"].get(n, n), est["leituras"].get(n)
     if not d:
         return f"• {ap} ({n}): ainda sem leitura"
-    return f"• {ap} ({n})\n   {d['situacao']} — {d['departamento']}"
+    return f"• {ap} ({n})\n   {d['situacao']} — {d['departamento']}\n   ℹ️ {significado(d['situacao'])}"
 
 
 def texto_status(est, m):
@@ -171,11 +208,20 @@ def texto_processo(est, n):
     if not d:
         return f"Sem leitura de {n}. Ele está na lista? (/status)"
     linhas = [f"📄 {est['monitorados'].get(n, n)} ({n})"] + [f"{NOMES[c]}: {d[c]}" for c in CAMPOS]
+    linhas.append(f"ℹ️ {d['situacao']} = {significado(d['situacao'])}")
     hist = est["historico"].get(n, [])[-10:]
     if hist:
         linhas.append("\nÚltimas movimentações:")
         linhas += [f"  {h['quando']}: {h['mudanca']}" for h in reversed(hist)]
+    linhas.append("\n" + links(d))
     return "\n".join(linhas)
+
+
+FONTE = ("ℹ️ De onde vêm as informações:\n"
+         "Da consulta pública do Sigam/Naturatins (sem login), lida pelo robô no seu Mac:\n"
+         "https://sigam.to.gov.br/cadastrousuarioexterno/consulta_documento_processo.aspx\n\n"
+         "Ela mostra situação, departamento, assunto e interessado. O conteúdo de pareceres, "
+         "notificações e despachos só aparece logado no Sigam — use o link de /processo.")
 
 
 def ler_comandos(tg, est, espera=0):
@@ -203,6 +249,8 @@ def tratar_comandos(est, comandos, m):
         nums = RE_NUM.findall(texto)
         if cmd in ("/start", "/ajuda", "/help"):
             resp.append(lambda: AJUDA)
+        elif cmd == "/fonte":
+            resp.append(lambda: FONTE)
         elif cmd == "/status":
             resp.append(lambda: texto_status(est, m))
         elif cmd == "/processo" and nums:
@@ -230,11 +278,12 @@ def atualizar_leituras(est, m):
         if not d:
             continue
         antes = est["leituras"].get(n)
-        if antes and antes != d:
+        if antes and any(antes.get(c) != d[c] for c in CAMPOS):
             mud = "; ".join(f"{NOMES[c]}: {antes.get(c, '—')} → {d[c]}" for c in CAMPOS if antes.get(c) != d[c])
             est["historico"].setdefault(n, []).append({"quando": carimbo(m), "quando_iso": m.isoformat(), "mudanca": mud})
             est["historico"][n] = est["historico"][n][-50:]
-            alertas.append(f"📄 {est['monitorados'].get(n, n)} ({n})\n  " + mud.replace("; ", "\n  "))
+            alertas.append(f"📄 {est['monitorados'].get(n, n)} ({n})\n  " + mud.replace("; ", "\n  ")
+                           + f"\n  ℹ️ {d['situacao']} = {significado(d['situacao'])}\n" + links(d))
         est["leituras"][n] = d
     return alertas
 
@@ -299,13 +348,14 @@ def main():
                     raise RuntimeError("nenhum processo retornou na consulta (site fora ou mudou)")
                 for n, d in atual.items():
                     antes = est["leituras"].get(n)
-                    if antes and antes != d:
+                    if antes and any(antes.get(c) != d[c] for c in CAMPOS):
                         mud = "; ".join(f"{NOMES[c]}: {antes.get(c, '—')} → {d[c]}"
                                         for c in CAMPOS if antes.get(c) != d[c])
                         est["historico"].setdefault(n, []).append(
                             {"quando": carimbo(m), "quando_iso": m.isoformat(), "mudanca": mud})
                         est["historico"][n] = est["historico"][n][-50:]
-                        alertas.append(f"📄 {est['monitorados'].get(n, n)} ({n})\n  " + mud.replace("; ", "\n  "))
+                        alertas.append(f"📄 {est['monitorados'].get(n, n)} ({n})\n  " + mud.replace("; ", "\n  ")
+                           + f"\n  ℹ️ {d['situacao']} = {significado(d['situacao'])}\n" + links(d))
                     est["leituras"][n] = d
                 if est.pop("falhando_desde", None):
                     est.pop("ultimo_aviso_falha", None)
