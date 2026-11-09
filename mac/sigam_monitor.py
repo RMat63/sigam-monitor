@@ -52,6 +52,7 @@ COMANDOS = [
     ("historico", "Tabela completa de movimentações e pendências (precisa de login)", "historico 2025/40311/012702"),
     ("login", "Abre o login do Sigam no Mac para liberar o histórico", "login"),
     ("fonte", "De onde vêm as informações", "fonte"),
+    ("lista", "Só número, localidade e do que se trata (sem status) — pronto para encaminhar", "lista"),
     ("opcoes", "Mostra esta lista de comandos", "op"),
 ]
 AJUDA = ("📌 <b>Opções de comando</b>\n(pode digitar com ou sem a barra /, ou usar os botões abaixo)\n\n"
@@ -64,6 +65,7 @@ ALIAS = {"op": "/opcoes", "ops": "/opcoes", "opcao": "/opcoes", "opcoes": "/opco
          "ajuda": "/opcoes", "help": "/opcoes", "start": "/opcoes", "comandos": "/opcoes",
          "status": "/status", "atualizar": "/atualizar", "processo": "/processo", "add": "/add",
          "adicionar": "/add", "remover": "/remover", "fonte": "/fonte",
+         "lista": "/lista", "processos": "/lista", "relacao": "/lista", "compartilhar": "/lista",
          "historico": "/historico", "hist": "/historico", "login": "/login", "entrar": "/login"}
 
 
@@ -265,6 +267,25 @@ def texto_processo(est, n, extra=""):
     return "\n".join(linhas)
 
 
+def texto_lista(est):
+    """Relação para encaminhar: número, localidade e objeto — sem status, sem links."""
+    grupos = {}
+    for n, apelido in est["monitorados"].items():
+        partes = [x.strip() for x in apelido.replace("—", "–").split("–", 1)]
+        local = partes[0] if len(partes) > 1 else "Outros"
+        d = est["leituras"].get(n) or {}
+        objeto = d.get("assunto") or (partes[1] if len(partes) > 1 else apelido)
+        objeto = objeto.replace(" para: ", " — ")
+        interessado = d.get("interessado") or ""
+        grupos.setdefault(local, []).append((n, objeto, interessado))
+    linhas = ["Processos no Naturatins (Sigam)"]
+    for local, itens in grupos.items():
+        linhas.append(f"\n📍 {escape(local)}")
+        for n, objeto, interessado in itens:
+            linhas.append(f"• <code>{n}</code> — {escape(objeto)}" + (f"\n  Interessado: {escape(interessado)}" if interessado else ""))
+    return "\n".join(linhas)
+
+
 FONTE = ("ℹ️ De onde vêm as informações:\n"
          "Da consulta pública do Sigam/Naturatins (sem login), lida pelo robô no seu Mac:\n"
          "https://sigam.to.gov.br/cadastrousuarioexterno/consulta_documento_processo.aspx\n\n"
@@ -314,6 +335,8 @@ def tratar_comandos(est, comandos, m):
         nums = RE_NUM.findall(texto)
         if cmd == "/opcoes":
             resp.append(lambda: AJUDA)
+        elif cmd == "/lista":
+            resp.append(lambda: texto_lista(est))
         elif cmd == "/fonte":
             resp.append(lambda: FONTE)
         elif cmd == "/status":
